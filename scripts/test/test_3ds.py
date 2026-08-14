@@ -61,7 +61,28 @@ def test_classify_mpo_handling():
     assert response.status_code == 200
     print("Multi-frame handling test passed!")
 
+def test_classify_raw_framebuffers():
+    """Test that raw 3DS framebuffers of various sizes (top/bottom screens) are parsed."""
+    # Top screen size (400x240 @ 16-bit RGB565 = 192000 bytes)
+    fb_top = b'\x00' * 192000
+    headers = {
+        "X-API-KEY": "testkey",
+        "User-Agent": "Mozilla/5.0 (Nintendo 3DS; U; ; en) Version/1.7630.US"
+    }
+    files = {"file": ("top_screen.bin", fb_top, "application/octet-stream")}
+    response = client.post("/classify", headers=headers, files=files)
+    assert response.status_code == 200
+    print("Raw top screen framebuffer test passed!")
+
+    # Bottom screen size (320x240 @ 16-bit RGB565 = 153600 bytes)
+    fb_bottom = b'\x00' * 153600
+    files = {"file": ("bottom_screen.bin", fb_bottom, "application/octet-stream")}
+    response = client.post("/classify", headers=headers, files=files)
+    assert response.status_code == 200
+    print("Raw bottom screen framebuffer test passed!")
+
 if __name__ == "__main__":
     test_classify_3ds_ua()
     test_classify_mpo_handling()
+    test_classify_raw_framebuffers()
     print("All 3DS compatibility tests passed!")

@@ -25,6 +25,7 @@ class PokemonBase:
     def __init__(self):
         self._names : set[str] = set()
         self._phonetics : dict[str, str] = {}
+        self._vertex_classifier = None
         self._load_data()
 
     def _load_data(self):
@@ -98,3 +99,13 @@ class PokemonBase:
 
     def get_all_names(self) -> set[str]:
         return self._names
+
+    def classify_via_vertex(self, image: Any) -> dict[str, Any] | None:
+        """
+        Classifies the image using Google Vertex AI Gemini model.
+        """
+        if self._vertex_classifier is None:
+            from .vertex_classifier import VertexClassifier
+            self._vertex_classifier = VertexClassifier(pokemon_repo=self)
+
+        return self._vertex_classifier.classify_image(image)

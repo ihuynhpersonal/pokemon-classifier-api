@@ -4,6 +4,8 @@ import os
 from typing import Annotated
 
 import requests
+import cv2
+import numpy as np
 from PIL import Image, UnidentifiedImageError
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Depends, Response
@@ -132,6 +134,7 @@ async def get_pokemon_sprite(name: str, size: int = 64):
 @app.post("/classify", response_model=PokemonSchema, responses={**COMMON_RESPONSES, 400: {"description": "Invalid input (size or format)"}, 404: {"description": "Could not classify image"}, 500: {"description": "Internal server error during classification"}})
 async def classify_image(
     file: Annotated[UploadFile, File(...)],
+    provider: str | None = None,
     user_agent: Annotated[str | None, Header()] = None
 ):
     try:
@@ -141,48 +144,84 @@ async def classify_image(
 
         is_3ds = user_agent and "3DS" in user_agent.upper()
 
-        if is_3ds:
-            size = len(content)
-            if size == 192000:
-                rgb_data = bytearray(400 * 240 * 3)
-                for x in range(240):
-                    for y in range(400):
-                        offset = (x * 400 + y) * 2
-                        word = content[offset] | (content[offset + 1] << 8)
-                        rgb_data[(y * 240 + x) * 3] = ((word >> 11) & 0x1F) << 3
-                        rgb_data[(y * 240 + x) * 3 + 1] = ((word >> 5) & 0x3F) << 2
-                        rgb_data[(y * 240 + x) * 3 + 2] = (word & 0x1F) << 3
-                image = Image.frombytes("RGB", (240, 400), bytes(rgb_data)).rotate(90, expand=True)
+        if validate_image_header(content):
+            try:
+                image = Image.open(io.BytesIO(content))
+            except (UnidentifiedImageError, ValueError):
+                raise HTTPException(status_code=400, detail="Invalid image content")
+        elif is_3ds:
+            num_pixels = len(content) // 2
+            if num_pixels >= 240:
+                width = 240
+                height = num_pixels // 240
+
+                # 1. Truncate buffer to exact pixel count and load into a 16-bit array
+                total_pixels = width * height
+                words = np.frombuffer(content[: total_pixels * 2], dtype=np.uint16)
+
+                # 2. Reshape to match the 3DS column-major framebuffer layout (width x height)
+                words = words.reshape((width, height))
+
+                # 3. Vectorized RGB565 bit-shifts
+                r = ((words >> 11) & 0x1F) << 3
+                g = ((words >> 5) & 0x3F) << 2
+                b = (words & 0x1F) << 3
+
+                # 4. Stack as BGR for OpenCV (Blue, Green, Red order)
+                bgr_array = np.stack([b, g, r], axis=-1).astype(np.uint8)
+
+                # 5. Transpose (1, 0, 2) maps (x, y) to (y, x) -> (height, width, 3)
+                bgr_array = np.transpose(bgr_array, (1, 0, 2))
+
+                # 6. Rotate 90 degrees clockwise (equivalent to PIL's rotate(90, expand=True))
+                opencv_image = cv2.rotate(bgr_array, cv2.ROTATE_90_CLOCKWISE)
+
+                # --- OPENCV PREPROCESSING FOR GEMINI ACCURACY ---
+
+                # Apply CLAHE on the Luminance (L) channel to boost contrast in low-light/museum scenes
+                lab = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2LAB)
+                l, a, b_channel = cv2.split(lab)
+
+                clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+                cl = clahe.apply(l)
+
+                enhanced_lab = cv2.merge((cl, a, b_channel))
+                opencv_image = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+
+                # Unsharp Masking to sharpen scythe/limb silhouettes against 3DS camera noise
+                blur = cv2.GaussianBlur(opencv_image, (0, 0), sigmaX=2.0)
+                opencv_image = cv2.addWeighted(opencv_image, 1.5, blur, -0.5, 0)
+                _, buffer = cv2.imencode('.jpg', opencv_image, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+                image = buffer.tobytes()
+            else:
+                raise HTTPException(status_code=400, detail="Invalid 3DS framebuffer size")
         else:
-            if not validate_image_header(content):
-                raise HTTPException(status_code=400, detail="Invalid image type")
-            else:
-                try:
-                    image = Image.open(io.BytesIO(content))
-                except (UnidentifiedImageError, ValueError):
-                    raise HTTPException(status_code=400, detail="Invalid image content")
+            raise HTTPException(status_code=400, detail="Invalid image type")
 
-        try:
-            image = remove(image)
-            if image.mode == 'RGBA':
-                white_bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
-                image = Image.alpha_composite(white_bg, image).convert("RGB")
-            else:
-                image = image.convert("RGB")
-        except Exception as rb_err:
-            logger.error(f"Rembg error: {rb_err}")
-            image = image.convert("RGB")
+        info = None
+        selected_provider = (provider or os.getenv("DEFAULT_PROVIDER", "vertex")).lower()
 
-        predictions = pokemon_classifier.predict(image, top_k=1)
-        if not predictions:
-            raise HTTPException(status_code=404, detail="Could not classify image")
-            
-        raw_name = predictions[0]["label"]
-        info = pokemon_repo.get_by_name(raw_name)
-        
+        if selected_provider == "vertex":
+            try:
+                info = pokemon_repo.classify_via_vertex(image)
+                if info:
+                    logger.info(f"Successfully classified image via Vertex AI: {info['name']}")
+            except Exception as vertex_err:
+                logger.error(f"Vertex AI classification failed: {vertex_err}")
+
+        # Fallback to local ViT if no match found or provider is "vit"
         if not info:
-             return {"name": raw_name.capitalize()}
-             
+            logger.info("Using local ViT model for classification...")
+            predictions = pokemon_classifier.predict(image, top_k=1)
+            if not predictions:
+                raise HTTPException(status_code=404, detail="Could not classify image")
+                
+            raw_name = predictions[0]["label"]
+            info = pokemon_repo.get_by_name(raw_name)
+            
+            if not info:
+                 return {"name": raw_name.capitalize()}
+                 
         return info
             
     except HTTPException:

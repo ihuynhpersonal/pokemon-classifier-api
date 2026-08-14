@@ -10,3 +10,6 @@ requests
 rembg>=2.0.50
 onnxruntime>=1.17.0
 pokebase>=1.4.1
+numpy
+opencv-python
+google-genai>=2.10.0
