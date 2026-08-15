@@ -4,13 +4,13 @@ A REST API built with FastAPI that uses a Vision Transformer (ViT) model (`skshm
 
 ## Features
 - **FastAPI**: High-performance, modern web framework.
-- **Vision Transformer**: Fine-tuned ViT for high-accuracy Pokémon classification.
+- **Vertex AI**: Use Google Cloud Vertex AI for high-accuracy Pokémon classification.
+- **Vision Transformer**: Fine-tuned ViT for high-accuracy Pokémon classification as backup.
 - **Full Gen 9 Support**: Recognizes all 1,025 Pokémon.
 - **Dynamic Metadata**: Enriches results with real-time data from PokéAPI (types, description, region, etc.).
 - **3DS Compatibility**: 
     - Supports raw 3DS framebuffer uploads (BGR565).
     - Provides a `/sprite` endpoint that returns 3DS-native 8x8 tiled RGBA8888 sprites.
-- **Background Removal**: Uses `rembg` to improve classification accuracy by focusing on the subject.
 
 ## Installation
 
@@ -100,4 +100,7 @@ curl -X GET "http://localhost:8000/pokemon/pikachu/sprite?size=64" \
 Metadata is fetched dynamically via the `pokebase` library, which interacts with the [PokéAPI](https://pokeapi.co/). Names are loaded at startup, and full details are retrieved and cached on demand.
 
 ## Model Details
-The API uses a fine-tuned Vision Transformer (ViT) model. Upon upload, images undergo background removal via `rembg` and normalization before being passed to the classifier.
+The API will call Vertex AI in Google Cloud to identify Pokemon (I got lazy to train a model for Pokemon Fossil Museum. I had looked into Label Studio, but it looked like a lot of work to train the model and ML backends were a nightmare to try to set up). If unreachable, the API uses a fine-tuned Vision Transformer (ViT) model. 
+
+## Results
+08/15/2026 - API identitied 60% of Pokemon at field museum. People were sorta impressed. API will probably be discontinued.
